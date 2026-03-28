@@ -1,0 +1,40 @@
+name: Update Market Data
+
+on:
+  schedule:
+    - cron: '0 2 * * 1-5'   # 2am UTC weekdays (~9pm ET, after CBOE publishes)
+  workflow_dispatch:          # manual trigger from Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Scrape CBOE put-call data
+        run: python scripts/cboe_scrape.py
+
+      - name: Commit and push if data changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/cboe_pc_ratios.csv data/cboe_pc_ratios.json
+          if git diff --cached --quiet; then
+            echo "No new data — nothing to commit."
+          else
+            git commit -m "chore: update CBOE put-call data $(date -u +%Y-%m-%d)"
+            git push
+          fi

@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Market Sentiment</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f1117;
+      color: #e0e0e0;
+      font-family: system-ui, sans-serif;
+      padding: 1.5rem;
+    }
+
+    h1 {
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 0.25rem;
+    }
+
+    #updated {
+      font-size: 0.75rem;
+      color: #999;
+      margin-bottom: 1.5rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    .card {
+      background: #1a1d27;
+      border: 1px solid #2a2d3a;
+      border-radius: 8px;
+      padding: 0.75rem 1rem 1rem;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+
+    .card:hover { border-color: #5b9cf6; }
+
+    .card-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 0.5rem;
+    }
+
+    .card-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #ddd;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .horizons {
+      display: flex;
+      gap: 0.25rem;
+    }
+
+    .horizons button {
+      background: none;
+      border: 1px solid #555;
+      color: #bbb;
+      border-radius: 4px;
+      font-size: 0.65rem;
+      padding: 1px 5px;
+      cursor: pointer;
+      transition: all 0.1s;
+    }
+
+    .horizons button.active,
+    .horizons button:hover {
+      border-color: #6ab0ff;
+      color: #6ab0ff;
+    }
+
+    .chart-wrap {
+      position: relative;
+      height: calc(50vh - 120px);
+      min-height: 140px;
+    }
+
+    /* Expanded overlay */
+    #overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    #overlay.open { display: flex; }
+
+    #overlay-card {
+      background: #1a1d27;
+      border: 1px solid #5b9cf6;
+      border-radius: 10px;
+      padding: 1rem 1.25rem 1.25rem;
+      width: min(1260px, 86vw);
+    }
+
+    #overlay-card .card-title { font-size: 0.9rem; }
+
+    #overlay-chart-wrap {
+      position: relative;
+      height: min(700px, 80vh);
+      margin-top: 0.5rem;
+    }
+
+    #close-btn {
+      background: none;
+      border: none;
+      color: #888;
+      font-size: 1.2rem;
+      cursor: pointer;
+      line-height: 1;
+    }
+
+    #close-btn:hover { color: #fff; }
+  </style>
+</head>
+<body>
+  <h1>Market Sentiment</h1>
+  <div id="updated"></div>
+  <div style="margin-bottom:1rem;font-size:0.75rem;">
+    <a href="cboe.html" style="color:#5b9cf6;">CBOE full data explorer →</a>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div id="overlay">
+    <div id="overlay-card">
+      <div class="card-header">
+        <span class="card-title" id="overlay-title"></span>
+        <div style="display:flex;gap:0.5rem;align-items:center;">
+          <div class="horizons" id="overlay-horizons"></div>
+          <button id="close-btn" title="Close (Esc)">&#x2715;</button>
+        </div>
+      </div>
+      <div id="overlay-chart-wrap">
+        <canvas id="overlay-canvas"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const SERIES = [
+      { key: "equity_pc", label: "Equity Put/Call Ratio" },
+      { key: "vix",       label: "VIX" },
+      // add more indicators here
+    ];
+
+    const HORIZONS = ["3mo", "YTD", "1y", "2y", "5y", "10y", "max"];
+    const DEFAULT_HORIZON = "1y";
+
+    const COLORS = {
+      line: "#5b9cf6",
+      sma:  "#ffd447",
+      grid: "#1f2333",
+      tick: "#aaa",
+    };
+
+    Chart.Tooltip.positioners.topLeft = function(items) {
+      const chart = this.chart;
+      return { x: chart.chartArea.left + 8, y: chart.chartArea.top };
+    };
+
+    let allData = [];
+    let overlayChart = null;
+    let overlaySeriesKey = null;
+    let overlayHorizon = DEFAULT_HORIZON;
+    const miniCharts = {};
+    const miniHorizonState = {};
+
+    function sma(values, n) {
+      return values.map((_, i) => {
+        if (i < n - 1) return null;
+        const slice = values.slice(i - n + 1, i + 1);
+        return slice.reduce((a, b) => a + b, 0) / n;
+      });
+    }
+
+    function filterByHorizon(data, horizon) {
+      if (horizon === "max") return data;
+      const last = new Date(data[data.length - 1].date);
+      let start;
+      if (horizon === "YTD") {
+        start = new Date(last.getFullYear(), 0, 1);
+      } else {
+        const months = { "3mo": 3, "1y": 12, "2y": 24, "5y": 60, "10y": 120 }[horizon];
+        start = new Date(last);
+        start.setMonth(start.getMonth() - months);
+      }
+      return data.filter(d => new Date(d.date) >= start);
+    }
+
+    function buildChartData(data, key) {
+      const labels = data.map(d => d.date);
+      const values = data.map(d => d[key]);
+      return { labels, values, smoother: sma(values, 20) };
+    }
+
+    function commonOptions(minimal = true) {
+      return {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: {
+          legend: { display: !minimal },
+          tooltip: {
+            mode: "index",
+            intersect: false,
+            position: "topLeft",
+            callbacks: {
+              label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(2) ?? ""}`,
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { color: COLORS.tick, maxTicksLimit: minimal ? 4 : 10, font: { size: 10 } },
+            grid: { color: COLORS.grid },
+          },
+          y: {
+            ticks: { color: COLORS.tick, font: { size: 10 } },
+            grid: { color: COLORS.grid },
+          },
+        },
+        interaction: { mode: "index", intersect: false },
+      };
+    }
+
+    function buildDatasets(values, smoother, minimal) {
+      return [
+        {
+          label: "Daily",
+          data: values,
+          borderColor: COLORS.line,
+          backgroundColor: "transparent",
+          borderWidth: minimal ? 1 : 1.5,
+          pointRadius: 0,
+          tension: 0,
+          order: 2,
+        },
+        {
+          label: "20-day SMA",
+          data: smoother,
+          borderColor: COLORS.sma,
+          backgroundColor: "transparent",
+          borderWidth: minimal ? 2 : 2.5,
+          pointRadius: 0,
+          tension: 0,
+          spanGaps: false,
+          order: 1,
+        },
+      ];
+    }
+
+    function buildCard(series) {
+      const card = document.createElement("div");
+      card.className = "card";
+
+      const header = document.createElement("div");
+      header.className = "card-header";
+
+      const title = document.createElement("span");
+      title.className = "card-title";
+      title.textContent = series.label;
+
+      const horizonDiv = document.createElement("div");
+      horizonDiv.className = "horizons";
+
+      HORIZONS.forEach(h => {
+        const btn = document.createElement("button");
+        btn.textContent = h;
+        if (h === DEFAULT_HORIZON) btn.classList.add("active");
+        btn.addEventListener("click", e => {
+          e.stopPropagation();
+          horizonDiv.querySelectorAll("button").forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+          miniHorizonState[series.key] = h;
+          const { labels, values, smoother } = buildChartData(filterByHorizon(allData, h), series.key);
+          miniCharts[series.key].data = { labels, datasets: buildDatasets(values, smoother, true) };
+          miniCharts[series.key].update("none");
+        });
+        horizonDiv.appendChild(btn);
+      });
+
+      header.appendChild(title);
+      header.appendChild(horizonDiv);
+
+      const wrap = document.createElement("div");
+      wrap.className = "chart-wrap";
+      const canvas = document.createElement("canvas");
+      wrap.appendChild(canvas);
+
+      card.appendChild(header);
+      card.appendChild(wrap);
+      card.addEventListener("click", () => openOverlay(series.key));
+
+      const { labels, values, smoother } = buildChartData(filterByHorizon(allData, DEFAULT_HORIZON), series.key);
+      miniCharts[series.key] = new Chart(canvas, {
+        type: "line",
+        data: { labels, datasets: buildDatasets(values, smoother, true) },
+        options: commonOptions(true),
+      });
+      miniHorizonState[series.key] = DEFAULT_HORIZON;
+
+      return card;
+    }
+
+    function openOverlay(key) {
+      overlaySeriesKey = key;
+      overlayHorizon = miniHorizonState[key] ?? DEFAULT_HORIZON;
+      const series = SERIES.find(s => s.key === key);
+      document.getElementById("overlay-title").textContent = series.label;
+
+      const horizonDiv = document.getElementById("overlay-horizons");
+      horizonDiv.innerHTML = "";
+      HORIZONS.forEach(h => {
+        const btn = document.createElement("button");
+        btn.textContent = h;
+        if (h === overlayHorizon) btn.classList.add("active");
+        btn.addEventListener("click", () => {
+          horizonDiv.querySelectorAll("button").forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+          overlayHorizon = h;
+          updateOverlayChart();
+        });
+        horizonDiv.appendChild(btn);
+      });
+
+      if (overlayChart) { overlayChart.destroy(); overlayChart = null; }
+      const { labels, values, smoother } = buildChartData(filterByHorizon(allData, overlayHorizon), key);
+      overlayChart = new Chart(document.getElementById("overlay-canvas"), {
+        type: "line",
+        data: { labels, datasets: buildDatasets(values, smoother, false) },
+        options: commonOptions(false),
+      });
+      document.getElementById("overlay").classList.add("open");
+    }
+
+    function updateOverlayChart() {
+      if (!overlayChart || !overlaySeriesKey) return;
+      const { labels, values, smoother } = buildChartData(filterByHorizon(allData, overlayHorizon), overlaySeriesKey);
+      overlayChart.data.labels = labels;
+      overlayChart.data.datasets = buildDatasets(values, smoother, false);
+      overlayChart.update("none");
+    }
+
+    function closeOverlay() {
+      document.getElementById("overlay").classList.remove("open");
+      if (overlayChart) { overlayChart.destroy(); overlayChart = null; }
+      overlaySeriesKey = null;
+    }
+
+    document.getElementById("close-btn").addEventListener("click", closeOverlay);
+    document.getElementById("overlay").addEventListener("click", e => {
+      if (e.target === document.getElementById("overlay")) closeOverlay();
+    });
+    document.addEventListener("keydown", e => { if (e.key === "Escape") closeOverlay(); });
+
+    async function init() {
+      const resp = await fetch("data/cboe_pc_ratios.json");
+      allData = await resp.json();
+      document.getElementById("updated").textContent =
+        `Last updated: ${allData[allData.length - 1]?.date ?? "unknown"}`;
+      const grid = document.getElementById("grid");
+      SERIES.forEach(s => grid.appendChild(buildCard(s)));
+    }
+
+    init().catch(err => {
+      document.getElementById("updated").textContent = "Error loading data.";
+      console.error(err);
+    });
+  </script>
+</body>
+</html>
