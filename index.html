@@ -177,6 +177,7 @@
     };
 
     let allData = [];
+    const smaCache = {};
     let overlayChart = null;
     let overlaySeriesKey = null;
     let overlayHorizon = DEFAULT_HORIZON;
@@ -206,9 +207,11 @@
     }
 
     function buildChartData(data, key) {
+      const start = allData.indexOf(data[0]);
       const labels = data.map(d => d.date);
       const values = data.map(d => d[key]);
-      return { labels, values, smoother: sma(values, 20) };
+      const smoother = smaCache[key].slice(start, start + data.length);
+      return { labels, values, smoother };
     }
 
     function commonOptions(minimal = true) {
@@ -217,7 +220,10 @@
         maintainAspectRatio: false,
         animation: false,
         plugins: {
-          legend: { display: !minimal },
+          legend: {
+            display: !minimal,
+            labels: { color: "#e0e0e0", font: { size: 14 } },
+          },
           tooltip: {
             mode: "index",
             intersect: false,
@@ -229,11 +235,11 @@
         },
         scales: {
           x: {
-            ticks: { color: COLORS.tick, maxTicksLimit: minimal ? 4 : 10, font: { size: 10 } },
+            ticks: { color: COLORS.tick, maxTicksLimit: minimal ? 4 : 10, font: { size: minimal ? 10 : 14 } },
             grid: { color: COLORS.grid },
           },
           y: {
-            ticks: { color: COLORS.tick, font: { size: 10 } },
+            ticks: { color: COLORS.tick, font: { size: minimal ? 10 : 14 } },
             grid: { color: COLORS.grid },
           },
         },
@@ -374,6 +380,7 @@
     async function init() {
       const resp = await fetch("data/cboe_pc_ratios.json");
       allData = await resp.json();
+      SERIES.forEach(s => { smaCache[s.key] = sma(allData.map(d => d[s.key]), 20); });
       document.getElementById("updated").textContent =
         `Last updated: ${allData[allData.length - 1]?.date ?? "unknown"}`;
       const grid = document.getElementById("grid");
