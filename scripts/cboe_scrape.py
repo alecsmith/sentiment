@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
-Nightly scraper: fetch today's CBOE data, append to data/cboe_pc_ratios.csv,
-and regenerate data/cboe_pc_ratios.json for the frontend.
+CBOE put-call ratio scraper.
+
+Usage:
+  python cboe_scrape.py                  # try today and yesterday
+  python cboe_scrape.py --days-back 1 2  # try yesterday and 2 days ago
+
+The workflow runs this twice daily (UTC):
+  21:30 UTC (5:30pm ET)  — checks today and yesterday:    --days-back 0 1
+  07:30 UTC (3:30am ET)  — checks yesterday and 2 days ago: --days-back 1 2
 """
 import csv
 import json
 import sys
-from datetime import date
-from io import StringIO
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -18,8 +24,7 @@ CSV_PATH   = DATA_DIR / "cboe_pc_ratios.csv"
 JSON_PATH  = DATA_DIR / "cboe_pc_ratios.json"
 FIELDNAMES = ["date", "total_pc", "index_pc", "etp_pc", "equity_pc", "vix"]
 
-# Dates manually excluded from the dataset due to known bad CBOE data.
-# These are dropped from the CSV and skipped if the nightly scraper encounters them.
+# Dates manually excluded due to known bad CBOE data.
 KNOWN_BAD_DATES = {
     "2025-01-09": "CBOE reported etp_pc=0.0 and equity_pc=0.0 — clearly missing data, not a real zero",
 }
@@ -63,7 +68,7 @@ def fetch_ratios(date_str: str) -> Optional[dict]:
         return None
 
 
-def fetch_vix_today(date_str: str) -> Optional[float]:
+def fetch_vix(date_str: str) -> Optional[float]:
     try:
         r = requests.get(VIX_URL, headers=HEADERS, timeout=15)
         r.raise_for_status()
@@ -71,7 +76,7 @@ def fetch_vix_today(date_str: str) -> Optional[float]:
             parts = line.split(",")
             if len(parts) >= 5 and parts[0].strip() == date_str:
                 return round(float(parts[4].strip()), 4)
-        # Fallback: last row
+        # Fallback: last row of CSV
         lines = [l for l in r.text.splitlines() if l.strip() and not l.startswith("DATE")]
         if lines:
             parts = lines[-1].split(",")
@@ -98,40 +103,58 @@ def csv_to_json():
     print(f"Regenerated {JSON_PATH} ({len(rows)} rows)")
 
 
-def main():
-    today = date.today().isoformat()
-
-    if today in KNOWN_BAD_DATES:
-        print(f"Skipping {today}: {KNOWN_BAD_DATES[today]}")
-        sys.exit(0)
-
-    if today in existing_dates():
-        print(f"Already have {today}. Regenerating JSON.")
-        csv_to_json()
-        sys.exit(0)
-
-    print(f"Fetching {today}...")
-    ratios = fetch_ratios(today)
+def fetch_and_append(date_str: str) -> bool:
+    """Fetch one date and append to CSV. Returns True if a row was added."""
+    ratios = fetch_ratios(date_str)
     if ratios is None:
-        print(f"No data for {today} (weekend/holiday?). Skipping.")
-        sys.exit(0)
+        print(f"  {date_str}: no data (not yet published or holiday/weekend)")
+        return False
 
-    vix = fetch_vix_today(today)
+    vix = fetch_vix(date_str)
     if vix is None:
-        print(f"WARNING: Could not get VIX for {today}. Skipping.")
-        sys.exit(0)
+        print(f"  {date_str}: could not get VIX, skipping")
+        return False
 
-    row = {"date": today, **ratios, "vix": vix}
-
+    row = {"date": date_str, **ratios, "vix": vix}
     write_header = not CSV_PATH.exists()
     with open(CSV_PATH, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         if write_header:
             writer.writeheader()
         writer.writerow(row)
-    print(f"Appended: {row}")
+    print(f"  {date_str}: appended")
+    return True
 
-    csv_to_json()
+
+def main():
+    if "--days-back" in sys.argv:
+        idx = sys.argv.index("--days-back")
+        days_back = [int(x) for x in sys.argv[idx + 1:]]
+    else:
+        days_back = [0, 1]
+
+    known = existing_dates()
+    added = 0
+
+    for n in days_back:
+        d = date.today() - timedelta(days=n)
+        date_str = d.isoformat()
+
+        if date_str in KNOWN_BAD_DATES:
+            print(f"  {date_str}: known bad data, skipping")
+            continue
+        if date_str in known:
+            print(f"  {date_str}: already have this date")
+            continue
+
+        if fetch_and_append(date_str):
+            known.add(date_str)
+            added += 1
+
+    if added > 0:
+        csv_to_json()
+    else:
+        print("No new data added.")
 
 
 if __name__ == "__main__":

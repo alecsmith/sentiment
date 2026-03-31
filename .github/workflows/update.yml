@@ -2,8 +2,9 @@ name: Update Market Data
 
 on:
   schedule:
-    - cron: '0 2 * * 1-5'   # 2am UTC weekdays (~9pm ET, after CBOE publishes)
-  workflow_dispatch:          # manual trigger from Actions tab
+    - cron: '30 21 * * *'  # 5:30pm ET — check today and yesterday
+    - cron: '30 7 * * *'   # 3:30am ET — check yesterday and 2 days ago
+  workflow_dispatch:        # manual trigger from Actions tab
 
 permissions:
   contents: write
@@ -25,7 +26,12 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Scrape CBOE put-call data
-        run: python scripts/cboe_scrape.py
+        run: |
+          if [ "${{ github.event.schedule }}" = "30 7 * * *" ]; then
+            python scripts/cboe_scrape.py --days-back 1 2
+          else
+            python scripts/cboe_scrape.py --days-back 0 1
+          fi
 
       - name: Commit and push if data changed
         run: |
