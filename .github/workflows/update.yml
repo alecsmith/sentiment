@@ -2,8 +2,8 @@ name: Update Market Data
 
 on:
   schedule:
-    - cron: '30 21 * * *'  # 5:30pm ET — check today and yesterday
     - cron: '30 7 * * *'   # 3:30am ET — check yesterday and 2 days ago
+    - cron: '30 10 * * *'  # 5:30am ET — backup check
   workflow_dispatch:        # manual trigger from Actions tab
 
 permissions:
@@ -26,12 +26,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Scrape CBOE put-call data
-        run: |
-          if [ "${{ github.event.schedule }}" = "30 7 * * *" ]; then
-            python scripts/cboe_scrape.py --days-back 1 2
-          else
-            python scripts/cboe_scrape.py --days-back 0 1
-          fi
+        run: python scripts/cboe_scrape.py --days-back 1 2
 
       - name: Commit and push if data changed
         run: |
