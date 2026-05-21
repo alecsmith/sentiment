@@ -155,29 +155,59 @@
   </div>
 
   <script>
-    const SERIES = [
-      { key: "equity_pc", label: "CBOE Equity Put/Call Ratio" },
-      { key: "vix",       label: "VIX" },
-      // add more indicators here
-    ];
-
-    const HORIZONS = ["3mo", "YTD", "1y", "2y", "5y", "10y", "max"];
-    const DEFAULT_HORIZON = "1y";
+    const SOURCES = {
+      cboe: "data/cboe_pc_ratios.json",
+      aaii: "data/aaii_sentiment.json",
+    };
 
     const COLORS = {
       line: "#5b9cf6",
       sma:  "#ffd447",
       grid: "#1f2333",
       tick: "#aaa",
+      bull: "#5cb85c",
+      neut: "#aaaaaa",
+      bear: "#d9534f",
     };
 
-    Chart.Tooltip.positioners.topLeft = function(items) {
+    const SERIES = [
+      {
+        key: "equity_pc",
+        label: "CBOE Equity Put/Call Ratio",
+        source: "cboe",
+        lines: [{ key: "equity_pc", label: "Daily", color: COLORS.line }],
+        sma: 20,
+      },
+      {
+        key: "vix",
+        label: "VIX",
+        source: "cboe",
+        lines: [{ key: "vix", label: "Daily", color: COLORS.line }],
+        sma: 20,
+      },
+      {
+        key: "aaii",
+        label: "AAII Sentiment Survey",
+        source: "aaii",
+        lines: [
+          { key: "bullish", label: "Bullish", color: COLORS.bull },
+          { key: "neutral", label: "Neutral", color: COLORS.neut },
+          { key: "bearish", label: "Bearish", color: COLORS.bear },
+        ],
+        percent: true,
+      },
+    ];
+
+    const HORIZONS = ["3mo", "YTD", "1y", "2y", "5y", "10y", "max"];
+    const DEFAULT_HORIZON = "1y";
+
+    Chart.Tooltip.positioners.topLeft = function() {
       const chart = this.chart;
       return { x: chart.chartArea.left + 8, y: chart.chartArea.top };
     };
 
-    let allData = [];
-    const smaCache = {};
+    const sourceData = {};
+    const sourceSma = {};
     let overlayChart = null;
     let overlaySeriesKey = null;
     let overlayHorizon = DEFAULT_HORIZON;
@@ -206,22 +236,53 @@
       return data.filter(d => new Date(d.date) >= start);
     }
 
-    function buildChartData(data, key) {
-      const start = allData.indexOf(data[0]);
-      const labels = data.map(d => d.date);
-      const values = data.map(d => d[key]);
-      const smoother = smaCache[key].slice(start, start + data.length);
-      return { labels, values, smoother };
+    function buildDatasets(series, horizon, minimal) {
+      const full = sourceData[series.source];
+      const filtered = filterByHorizon(full, horizon);
+      const startIdx = full.indexOf(filtered[0]);
+      const labels = filtered.map(d => d.date);
+      const datasets = [];
+      const multi = series.lines.length > 1;
+      series.lines.forEach(line => {
+        datasets.push({
+          label: line.label,
+          data: filtered.map(d => d[line.key]),
+          borderColor: line.color,
+          backgroundColor: "transparent",
+          borderWidth: multi ? (minimal ? 2 : 2.5) : (minimal ? 1 : 1.5),
+          pointRadius: 0,
+          tension: 0,
+          order: 2,
+        });
+        if (series.sma) {
+          const smaArr = sourceSma[series.source][line.key];
+          datasets.push({
+            label: `${series.sma}-period SMA`,
+            data: smaArr.slice(startIdx, startIdx + filtered.length),
+            borderColor: COLORS.sma,
+            backgroundColor: "transparent",
+            borderWidth: minimal ? 2 : 2.5,
+            pointRadius: 0,
+            tension: 0,
+            spanGaps: false,
+            order: 1,
+          });
+        }
+      });
+      return { labels, datasets };
     }
 
-    function commonOptions(minimal = true) {
+    function commonOptions(series, minimal) {
+      const pct = series.percent;
+      const fmt = v => v == null ? "" : pct ? `${(v * 100).toFixed(1)}%` : v.toFixed(2);
+      const multiLine = series.lines.length > 1;
       return {
         responsive: true,
         maintainAspectRatio: false,
         animation: false,
         plugins: {
           legend: {
-            display: !minimal,
+            display: !minimal && multiLine,
             labels: { color: "#e0e0e0", font: { size: 14 } },
           },
           tooltip: {
@@ -229,7 +290,7 @@
             intersect: false,
             position: "topLeft",
             callbacks: {
-              label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(2) ?? ""}`,
+              label: ctx => `${ctx.dataset.label}: ${fmt(ctx.parsed.y)}`,
             },
           },
         },
@@ -239,38 +300,16 @@
             grid: { color: COLORS.grid },
           },
           y: {
-            ticks: { color: COLORS.tick, font: { size: minimal ? 10 : 14 } },
+            ticks: {
+              color: COLORS.tick,
+              font: { size: minimal ? 10 : 14 },
+              callback: v => pct ? `${(v * 100).toFixed(0)}%` : v,
+            },
             grid: { color: COLORS.grid },
           },
         },
         interaction: { mode: "index", intersect: false },
       };
-    }
-
-    function buildDatasets(values, smoother, minimal) {
-      return [
-        {
-          label: "Daily",
-          data: values,
-          borderColor: COLORS.line,
-          backgroundColor: "transparent",
-          borderWidth: minimal ? 1 : 1.5,
-          pointRadius: 0,
-          tension: 0,
-          order: 2,
-        },
-        {
-          label: "20-day SMA",
-          data: smoother,
-          borderColor: COLORS.sma,
-          backgroundColor: "transparent",
-          borderWidth: minimal ? 2 : 2.5,
-          pointRadius: 0,
-          tension: 0,
-          spanGaps: false,
-          order: 1,
-        },
-      ];
     }
 
     function buildCard(series) {
@@ -296,8 +335,7 @@
           horizonDiv.querySelectorAll("button").forEach(b => b.classList.remove("active"));
           btn.classList.add("active");
           miniHorizonState[series.key] = h;
-          const { labels, values, smoother } = buildChartData(filterByHorizon(allData, h), series.key);
-          miniCharts[series.key].data = { labels, datasets: buildDatasets(values, smoother, true) };
+          miniCharts[series.key].data = buildDatasets(series, h, true);
           miniCharts[series.key].update("none");
         });
         horizonDiv.appendChild(btn);
@@ -315,11 +353,10 @@
       card.appendChild(wrap);
       card.addEventListener("click", () => openOverlay(series.key));
 
-      const { labels, values, smoother } = buildChartData(filterByHorizon(allData, DEFAULT_HORIZON), series.key);
       miniCharts[series.key] = new Chart(canvas, {
         type: "line",
-        data: { labels, datasets: buildDatasets(values, smoother, true) },
-        options: commonOptions(true),
+        data: buildDatasets(series, DEFAULT_HORIZON, true),
+        options: commonOptions(series, true),
       });
       miniHorizonState[series.key] = DEFAULT_HORIZON;
 
@@ -348,20 +385,18 @@
       });
 
       if (overlayChart) { overlayChart.destroy(); overlayChart = null; }
-      const { labels, values, smoother } = buildChartData(filterByHorizon(allData, overlayHorizon), key);
       overlayChart = new Chart(document.getElementById("overlay-canvas"), {
         type: "line",
-        data: { labels, datasets: buildDatasets(values, smoother, false) },
-        options: commonOptions(false),
+        data: buildDatasets(series, overlayHorizon, false),
+        options: commonOptions(series, false),
       });
       document.getElementById("overlay").classList.add("open");
     }
 
     function updateOverlayChart() {
       if (!overlayChart || !overlaySeriesKey) return;
-      const { labels, values, smoother } = buildChartData(filterByHorizon(allData, overlayHorizon), overlaySeriesKey);
-      overlayChart.data.labels = labels;
-      overlayChart.data.datasets = buildDatasets(values, smoother, false);
+      const series = SERIES.find(s => s.key === overlaySeriesKey);
+      overlayChart.data = buildDatasets(series, overlayHorizon, false);
       overlayChart.update("none");
     }
 
@@ -378,11 +413,25 @@
     document.addEventListener("keydown", e => { if (e.key === "Escape") closeOverlay(); });
 
     async function init() {
-      const resp = await fetch("data/cboe_pc_ratios.json");
-      allData = await resp.json();
-      SERIES.forEach(s => { smaCache[s.key] = sma(allData.map(d => d[s.key]), 20); });
+      const usedSources = [...new Set(SERIES.map(s => s.source))];
+      await Promise.all(usedSources.map(async key => {
+        const resp = await fetch(SOURCES[key]);
+        sourceData[key] = await resp.json();
+      }));
+      SERIES.forEach(s => {
+        sourceSma[s.source] ??= {};
+        if (!s.sma) return;
+        s.lines.forEach(line => {
+          sourceSma[s.source][line.key] = sma(sourceData[s.source].map(d => d[line.key]), s.sma);
+        });
+      });
+      const latest = usedSources
+        .map(k => sourceData[k][sourceData[k].length - 1]?.date)
+        .filter(Boolean)
+        .sort()
+        .pop();
       document.getElementById("updated").textContent =
-        `Last updated: ${allData[allData.length - 1]?.date ?? "unknown"}`;
+        `Last updated: ${latest ?? "unknown"}`;
       const grid = document.getElementById("grid");
       SERIES.forEach(s => grid.appendChild(buildCard(s)));
     }
