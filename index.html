@@ -303,7 +303,7 @@
             ticks: {
               color: COLORS.tick,
               font: { size: minimal ? 10 : 14 },
-              callback: v => pct ? `${(v * 100).toFixed(0)}%` : v,
+              callback: v => pct ? `${(v * 100).toFixed(0)}%` : +v.toFixed(2),
             },
             grid: { color: COLORS.grid },
           },
